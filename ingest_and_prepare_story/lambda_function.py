@@ -4,8 +4,10 @@ import io
 import os
 import urllib.parse
 import logging
+from pypdf.errors import DependencyError
 
-# Initialize clients outside the handler for reuse
+# OPTIMIZATION 1: Initialize clients outside the handler
+# This client object will be reused across warm invocations.
 s3 = boto3.client('s3')
 
 # Set up the logger
@@ -20,22 +22,20 @@ def lambda_handler(event, context):
     Triggered by a PDF upload to S3. Extracts text from the PDF and saves it
     as a .txt file to a destination S3 bucket.
     """
-    # 1. Get the bucket and key (filename) from the S3 event notification
-    source_bucket = event['Records'][0]['s3']['bucket']['name']
-    source_key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+    source_bucket = event['Records']['0']['s3']['bucket']['name']
+    source_key = urllib.parse.unquote_plus(event['Records']['0']['s3']['object']['key'], encoding='utf-8')
     
     logger.info(f"New PDF detected: {source_key} from bucket {source_bucket}")
     
     try:
-        # 2. Get the PDF file content from S3
         response = s3.get_object(Bucket=source_bucket, Key=source_key)
         pdf_file_content = response['Body'].read()
         
-        # 3. Use pypdf to extract text from the in-memory file
         pdf_file_in_memory = io.BytesIO(pdf_file_content)
         reader = pypdf.PdfReader(pdf_file_in_memory)
         
         text = ""
+        # The DependencyError happens here if the PDF is encrypted and 'cryptography' is missing
         for page in reader.pages:
             text += page.extract_text() or ""
             
@@ -43,7 +43,6 @@ def lambda_handler(event, context):
             logger.warning(f"Could not extract any text from {source_key}.")
             return
             
-        # 4. Save the extracted text to the destination bucket
         destination_key = os.path.splitext(source_key)[0] + '.txt'
         
         s3.put_object(
@@ -53,7 +52,15 @@ def lambda_handler(event, context):
         )
         
         logger.info(f"Successfully extracted text and saved to s3://{DESTINATION_BUCKET}/{destination_key}")
-        
+
+    except DependencyError:
+        logger.warning(f"File '{source_key}' appears to be encrypted. The 'cryptography' library is required to process it. Skipping this file.")
+        # Exit gracefully instead of crashing
+        return {
+            'statusCode': 200,
+            'body': 'Skipped encrypted PDF file.'
+        }
+    
     except Exception as e:
-        logger.error(f"Error processing {source_key}: {str(e)}")
+        logger.error(f"An unexpected error occurred while processing {source_key}: {str(e)}")
         raise e
