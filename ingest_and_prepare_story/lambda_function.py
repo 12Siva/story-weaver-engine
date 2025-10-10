@@ -4,10 +4,8 @@ import io
 import os
 import urllib.parse
 import logging
-from pypdf.errors import DependencyError
 
-# OPTIMIZATION 1: Initialize clients outside the handler
-# This client object will be reused across warm invocations.
+# Initialize clients outside the handler for reuse
 s3 = boto3.client('s3')
 
 # Set up the logger
@@ -18,12 +16,8 @@ logger.setLevel(logging.INFO)
 DESTINATION_BUCKET = os.environ['DESTINATION_BUCKET']
 
 def lambda_handler(event, context):
-    """
-    Triggered by a PDF upload to S3. Extracts text from the PDF and saves it
-    as a .txt file to a destination S3 bucket.
-    """
-    source_bucket = event['Records']['0']['s3']['bucket']['name']
-    source_key = urllib.parse.unquote_plus(event['Records']['0']['s3']['object']['key'], encoding='utf-8')
+    source_bucket = event['Records'][0]['s3']['bucket']['name']
+    source_key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
     
     logger.info(f"New PDF detected: {source_key} from bucket {source_bucket}")
     
@@ -35,7 +29,6 @@ def lambda_handler(event, context):
         reader = pypdf.PdfReader(pdf_file_in_memory)
         
         text = ""
-        # The DependencyError happens here if the PDF is encrypted and 'cryptography' is missing
         for page in reader.pages:
             text += page.extract_text() or ""
             
@@ -53,14 +46,6 @@ def lambda_handler(event, context):
         
         logger.info(f"Successfully extracted text and saved to s3://{DESTINATION_BUCKET}/{destination_key}")
 
-    except DependencyError:
-        logger.warning(f"File '{source_key}' appears to be encrypted. The 'cryptography' library is required to process it. Skipping this file.")
-        # Exit gracefully instead of crashing
-        return {
-            'statusCode': 200,
-            'body': 'Skipped encrypted PDF file.'
-        }
-    
     except Exception as e:
         logger.error(f"An unexpected error occurred while processing {source_key}: {str(e)}")
         raise e
